@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analisador de Provas</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Biblioteca para leitura de arquivos .xlsx e .xls -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .container {
+            max-width: 900px;
+        }
+        .card {
+            background-color: white;
+            border-radius: 1rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        /* Definição de cores para classes visuais */
+        .reprovado-cor { color: #dc2626; } /* Cor Vermelha para Reprovado */
+        .aprovado-cor { color: #16a34a; }  /* Cor Verde para Aprovado */
+        
+        .bg-reprovado { background-color: #fee2e2; } /* Background Rosa/Vermelho claro */
+        .bg-aprovado { background-color: #dcfce7; }  /* Background Verde claro */
+
+        /* Manter cores antigas para referência, se necessário */
+        .insuficiente { color: #dc2626; } 
+        .basico { color: #f97316; } 
+        .intermediario { color: #2563eb; } 
+        .avancado { color: #16a34a; }
+
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #3b82f6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+
+<div class="container mx-auto">
+    <div class="card p-6 md:p-10">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-2">Analisador de Provas</h1>
+        <p class="text-center text-gray-600 mb-8">Envie seu arquivo de planilha para analisar as notas por seção.</p>
+        
+        <div class="mb-6">
+            <label for="xlsx-file" class="block text-sm font-medium text-gray-700 mb-2">Selecione o arquivo .xlsx:</label>
+            <input type="file" id="xlsx-file" class="block w-full text-sm text-gray-500
+                file:mr-4 file:py-2 file:px-4
+                file:rounded-full file:border-0
+                file:text-sm file:font-semibold
+                file:bg-blue-50 file:text-blue-700
+                hover:file:bg-blue-100 transition-colors duration-200" accept=".xlsx, .xls">
+        </div>
+
+        <div id="loading" class="hidden flex items-center justify-center mt-8">
+            <div class="spinner mr-3"></div>
+            <span class="text-gray-600">Processando...</span>
+        </div>
+
+        <div id="error-message" class="hidden mt-8 p-4 bg-red-100 text-red-700 rounded-lg border border-red-300">
+            Ocorreu um erro ao processar o arquivo. Por favor, verifique se a formatação está correta (Linha 1: Respostas Corretas, Linha 2: Perguntas/Seções, Linha 3+: Dados dos Colaboradores).
+        </div>
+
+        <div id="results" class="mt-8">
+            <!-- Os resultados serão renderizados aqui -->
+        </div>
+
+    </div>
+</div>
+
+<!-- Modal de Detalhes da Seção -->
+<div id="detail-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-75 overflow-y-auto h-full w-full z-50">
+    <div class="relative top-10 mx-auto p-5 border w-11/12 md:max-w-xl shadow-lg rounded-xl bg-white">
+        <div class="flex justify-between items-center pb-3 border-b border-gray-200">
+            <h3 id="modal-title" class="text-xl font-bold text-gray-900">Detalhes da Seção</h3>
+            <button id="close-modal" class="text-gray-400 hover:text-gray-600 text-2xl font-bold p-1">&times;</button>
+        </div>
+        <div id="modal-body" class="mt-4 max-h-[80vh] overflow-y-auto">
+            <!-- Conteúdo detalhado das questões aqui -->
+        </div>
+    </div>
+</div>
+
+<script>
+    const xlsxFile = document.getElementById('xlsx-file');
+    const loadingMessage = document.getElementById('loading');
+    const errorMessage = document.getElementById('error-message');
+    const resultsContainer = document.getElementById('results');
+    const detailModal = document.getElementById('detail-modal');
+
+    // Armazenamento global dos resultados para acesso pelo modal
+    let globalProcessedResults = []; 
+
+    xlsxFile.addEventListener('change', handleFile, false);
+    document.getElementById('close-modal').addEventListener('click', closeModal);
+    detailModal.addEventListener('click', (e) => {
+        if (e.target === detailModal) {
+            closeModal();
+        }
+    });
+
+    function closeModal() {
+        detailModal.classList.add('hidden');
+    }
+
+    function handleFile(e) {
+        const file = e.target.files[0];
+        if (!file) {
+            return;
+        }
+        
+        loadingMessage.classList.remove('hidden');
+        errorMessage.classList.add('hidden');
+        resultsContainer.innerHTML = '';
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, {type: 'array'});
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                
+                // Converter a planilha para um array de arrays (linha a linha)
+                const rows = XLSX.utils.sheet_to_json(worksheet, {header: 1, defval: ''});
+                processData(rows);
+
+            } catch (error) {
+                console.error("Erro na leitura ou processamento do arquivo:", error);
+                errorMessage.classList.remove('hidden');
+            } finally {
+                loadingMessage.classList.add('hidden');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    /**
+     * Processa os dados da planilha.
+     */
+    function processData(lines) {
+        if (lines.length < 3) {
+            throw new Error('Dados insuficientes.');
+        }
+
+        const correctAnswersRow = lines[0]; // Linha 1 da nova planilha: Respostas Corretas
+        const questionsRow = lines[1];    // Linha 2 da nova planilha: Perguntas/Seções
+        const participantsData = lines.slice(2); // Linha 3 em diante: Dados dos Participantes
+
+        globalProcessedResults = []; // Limpa o armazenamento global
+        resultsContainer.innerHTML = ''; // Limpa a UI
+
+        const sectionDefinitions = {};
+        
+        // Coluna F (índice 5) é a primeira questão. 
+        for (let i = 5; i < questionsRow.length; i++) {
+            const questionText = questionsRow[i];
+            const match = String(questionText).match(/\((.*?)\)/);
+            if (match && match[1]) {
+                const sectionName = match[1].replace(/[\*]/g, '').trim(); 
+                const sectionKey = sectionName.replace(/\s/g, ''); 
+                if (!sectionDefinitions[sectionKey]) {
+                    sectionDefinitions[sectionKey] = {
+                        name: sectionName,
+                        questionIndices: [],
+                        totalQuestions: 0
+                    };
+                }
+                
+                sectionDefinitions[sectionKey].questionIndices.push(i);
+                sectionDefinitions[sectionKey].totalQuestions++; 
+            }
+        }
+
+        if (Object.keys(sectionDefinitions).length === 0) {
+            throw new Error('Nenhuma seção encontrada. Verifique se as perguntas estão no formato "(SEÇÃO)".');
+        }
+
+        participantsData.forEach((participantRow, index) => {
+            if (participantRow.length < 5 || !participantRow[1]) return; 
+
+            // Coluna B (índice 1): Email, Coluna E (índice 4): Líder
+            const email = participantRow[1];
+            const leader = participantRow[4];
+
+            const participantName = String(email).split('@')[0].split('.').map(name => name.charAt(0).toUpperCase() + name.slice(1)).join(' ');
+            
+            const participantResults = {
+                id: index, // Adiciona um ID para fácil recuperação global
+                name: participantName,
+                leader: leader,
+                sections: {}
+            };
+
+            for (const sectionKey in sectionDefinitions) {
+                const section = sectionDefinitions[sectionKey];
+                let correctAnswersCount = 0;
+                const totalQuestions = section.totalQuestions;
+                const questionDetails = []; // Novo array para armazenar detalhes
+
+                section.questionIndices.forEach(i => {
+                    const questionText = questionsRow[i];
+                    const userAnswer = (String(participantRow[i]) || '').trim();
+                    const correctAnswer = (String(correctAnswersRow[i]) || '').trim();
+                    const isCorrect = (userAnswer === correctAnswer && userAnswer !== '');
+
+                    if (isCorrect) {
+                        correctAnswersCount++;
+                    }
+                    
+                    questionDetails.push({
+                        question: String(questionText).replace(/\((.*?)\)/, '').trim(), // Remove o nome da seção da pergunta
+                        user: userAnswer,
+                        correct: correctAnswer,
+                        isCorrect: isCorrect
+                    });
+                });
+
+                // Cálculo da nota: % de acertos * 10
+                const scoreRaw = totalQuestions > 0 ? (correctAnswersCount / totalQuestions) * 10 : 0;
+                
+                // Arredonda para baixo (floor) com 1 casa decimal
+                const scorePercentage = Math.floor(scoreRaw * 10) / 10;
+                
+                let passFailStatus = '';
+                let categoryClass = '';
+                
+                // 1. Definição do Status Aprovado/Reprovado
+                if (scorePercentage >= 7.0) {
+                    passFailStatus = 'Aprovado';
+                    categoryClass = 'aprovado-cor'; 
+                } else {
+                    passFailStatus = 'Reprovado';
+                    categoryClass = 'reprovado-cor';
+                }
+                
+                // 2. Armazenar os resultados
+                participantResults.sections[section.name] = {
+                    score: scorePercentage.toFixed(1), 
+                    passFailStatus: passFailStatus,
+                    categoryClass: categoryClass,
+                    correctCount: correctAnswersCount,
+                    totalQuestions: totalQuestions,
+                    details: questionDetails // Adiciona os detalhes aqui
+                };
+            }
+
+            globalProcessedResults.push(participantResults);
+            renderParticipantResults(participantResults);
+        });
+
+        if (resultsContainer.innerHTML === '') {
+             resultsContainer.innerHTML = '<p class="text-center text-gray-500">Nenhum resultado processado. Verifique os dados da planilha.</p>';
+        }
+    }
+
+    function renderParticipantResults(data) {
+        const resultsHtml = `
+            <div class="card p-6 mb-6 ${data.id > 0 ? 'mt-6' : ''}">
+                <h2 class="text-2xl font-bold text-gray-800 mb-2">${data.name}</h2>
+                <p class="text-gray-600 mb-4">Líder: ${data.leader}</p>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    ${Object.keys(data.sections).map(sectionName => {
+                        const section = data.sections[sectionName];
+                        // Escapa aspas simples no nome da seção para o onclick
+                        const escapedSectionName = sectionName.replace(/'/g, "\\'"); 
+                        const colorClass = section.categoryClass;
+                        const bgClass = section.passFailStatus === 'Aprovado' ? 'bg-aprovado' : 'bg-reprovado';
+                        
+                        return `
+                            <div class="p-4 rounded-lg border border-gray-200 ${bgClass} shadow-md cursor-pointer hover:shadow-lg transition-shadow duration-150"
+                                 onclick="showDetails(${data.id}, '${escapedSectionName}')">
+                                <h3 class="text-lg font-semibold text-gray-700 mb-1">${sectionName}</h3>
+                                
+                                <!-- Status de APROVADO/REPROVADO -->
+                                <p class="text-sm font-bold mt-1 mb-2">Status: <span class="${colorClass}">${section.passFailStatus.toUpperCase()}</span></p>
+
+                                <!-- Nota e Acertos -->
+                                <p class="text-3xl font-bold ${colorClass}">${section.score}</p>
+                                <p class="text-sm text-gray-600 mt-1">Acertos: ${section.correctCount}/${section.totalQuestions}</p>
+                                
+                                <p class="text-xs text-gray-500 mt-2 italic">Clique para ver os detalhes</p>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+        resultsContainer.innerHTML += resultsHtml;
+    }
+
+    function showDetails(participantId, sectionName) {
+        const participant = globalProcessedResults.find(p => p.id === participantId);
+        if (!participant) return;
+
+        const section = participant.sections[sectionName];
+        if (!section) return;
+
+        const modalTitle = `Detalhes de ${sectionName} - ${participant.name}`;
+        
+        const detailsList = section.details.map((item, qIndex) => {
+            const statusClass = item.isCorrect ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold';
+            const statusText = item.isCorrect ? 'ACERTOU' : 'ERROU';
+            
+            return `
+                <div class="p-4 border-b border-gray-200 last:border-b-0">
+                    <p class="text-gray-900 font-bold mb-1">Questão ${qIndex + 1}:</p>
+                    <p class="text-gray-700 mb-2 italic">${item.question}</p>
+                    
+                    <p class="text-sm">Sua Resposta: <span class="font-medium text-blue-600">${item.user || 'Não Respondido'}</span></p>
+                    <p class="text-sm mb-1">Resposta Correta: <span class="font-medium text-gray-800">${item.correct || 'Vazio'}</span></p>
+                    
+                    <p class="text-sm mt-2 ${statusClass}">Resultado: ${statusText}</p>
+                </div>
+            `;
+        }).join('');
+
+        document.getElementById('modal-title').textContent = modalTitle;
+        document.getElementById('modal-body').innerHTML = detailsList;
+        detailModal.classList.remove('hidden');
+    }
+</script>
+
+</body>
+</html>
