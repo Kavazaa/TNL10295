@@ -29,13 +29,7 @@
         
         .bg-reprovado { background-color: #fee2e2; } /* Background Rosa/Vermelho claro */
         .bg-aprovado { background-color: #dcfce7; }  /* Background Verde claro */
-
-        /* Manter cores antigas para referência, se necessário */
-        .insuficiente { color: #dc2626; } 
-        .basico { color: #f97316; } 
-        .intermediario { color: #2563eb; } 
-        .avancado { color: #16a34a; }
-
+        
         .spinner {
             border: 4px solid rgba(0, 0, 0, 0.1);
             border-left-color: #3b82f6;
@@ -54,25 +48,42 @@
 <div class="container mx-auto">
     <div class="card p-6 md:p-10">
         <h1 class="text-3xl font-bold text-center text-gray-800 mb-2">Analisador de Provas</h1>
-        <p class="text-center text-gray-600 mb-8">Envie seu arquivo de planilha para analisar as notas por seção.</p>
+        <p class="text-center text-gray-600 mb-8">Envie as planilhas para iniciar a análise.</p>
         
-        <div class="mb-6">
-            <label for="xlsx-file" class="block text-sm font-medium text-gray-700 mb-2">Selecione o arquivo .xlsx:</label>
-            <input type="file" id="xlsx-file" class="block w-full text-sm text-gray-500
-                file:mr-4 file:py-2 file:px-4
-                file:rounded-full file:border-0
-                file:text-sm file:font-semibold
-                file:bg-blue-50 file:text-blue-700
-                hover:file:bg-blue-100 transition-colors duration-200" accept=".xlsx, .xls">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <!-- Upload Banco de Questões -->
+            <div class="p-4 rounded-lg border border-indigo-300 bg-indigo-50">
+                <label for="question-bank-file" class="block text-sm font-bold text-indigo-700 mb-2">1. Banco de Questões (.xlsx)</label>
+                <p class="text-xs text-indigo-600 mb-2">Colunas: A (CONCEITO), B (QUESTÃO), C (TEMA)</p>
+                <input type="file" id="question-bank-file" class="block w-full text-sm text-gray-500
+                    file:mr-4 file:py-2 file:px-4
+                    file:rounded-full file:border-0
+                    file:text-sm file:font-semibold
+                    file:bg-indigo-100 file:text-indigo-700
+                    hover:file:bg-indigo-200 transition-colors duration-200" accept=".xlsx, .xls">
+                <p id="bank-status" class="text-sm mt-2 font-medium text-red-500"></p>
+            </div>
+
+            <!-- Upload Prova (Avaliação) -->
+            <div class="p-4 rounded-lg border border-green-300 bg-green-50">
+                <label for="assessment-file" class="block text-sm font-bold text-green-700 mb-2">2. Prova/Avaliação (.xlsx)</label>
+                <p class="text-xs text-green-600 mb-2">Linha 1: Respostas Corretas, Linha 2: Perguntas (c/ SEÇÃO), Linha 3+: Participantes</p>
+                <input type="file" id="assessment-file" class="block w-full text-sm text-gray-500
+                    file:mr-4 file:py-2 file:px-4
+                    file:rounded-full file:border-0
+                    file:text-sm file:font-semibold
+                    file:bg-green-100 file:text-green-700
+                    hover:file:bg-green-200 transition-colors duration-200" accept=".xlsx, .xls" disabled>
+            </div>
         </div>
 
         <div id="loading" class="hidden flex items-center justify-center mt-8">
             <div class="spinner mr-3"></div>
-            <span class="text-gray-600">Processando...</span>
+            <span class="text-gray-600">Processando dados da prova...</span>
         </div>
 
         <div id="error-message" class="hidden mt-8 p-4 bg-red-100 text-red-700 rounded-lg border border-red-300">
-            Ocorreu um erro ao processar o arquivo. Por favor, verifique se a formatação está correta (Linha 1: Respostas Corretas, Linha 2: Perguntas/Seções, Linha 3+: Dados dos Colaboradores).
+            Ocorreu um erro ao processar o arquivo. Verifique se a estrutura das colunas está correta.
         </div>
 
         <div id="results" class="mt-8">
@@ -96,16 +107,20 @@
 </div>
 
 <script>
-    const xlsxFile = document.getElementById('xlsx-file');
+    const bankFile = document.getElementById('question-bank-file');
+    const assessmentFile = document.getElementById('assessment-file');
     const loadingMessage = document.getElementById('loading');
     const errorMessage = document.getElementById('error-message');
     const resultsContainer = document.getElementById('results');
     const detailModal = document.getElementById('detail-modal');
+    const bankStatus = document.getElementById('bank-status');
 
-    // Armazenamento global dos resultados para acesso pelo modal
-    let globalProcessedResults = []; 
+    // Variável para armazenar o índice de busca rápida (simulando um PROCV de alta performance)
+    let questionIndexByText = null; 
+    let globalProcessedResults = []; // Armazenamento global dos resultados da prova
 
-    xlsxFile.addEventListener('change', handleFile, false);
+    bankFile.addEventListener('change', handleQuestionBankFile, false);
+    assessmentFile.addEventListener('change', handleAssessmentFile, false);
     document.getElementById('close-modal').addEventListener('click', closeModal);
     detailModal.addEventListener('click', (e) => {
         if (e.target === detailModal) {
@@ -117,15 +132,11 @@
         detailModal.classList.add('hidden');
     }
 
-    function handleFile(e) {
-        const file = e.target.files[0];
-        if (!file) {
-            return;
-        }
-        
-        loadingMessage.classList.remove('hidden');
-        errorMessage.classList.add('hidden');
-        resultsContainer.innerHTML = '';
+    /**
+     * Função auxiliar para ler o arquivo XLSX
+     */
+    function readFile(file, callback) {
+        if (!file) return;
 
         const reader = new FileReader();
         reader.onload = function(e) {
@@ -134,11 +145,8 @@
                 const workbook = XLSX.read(data, {type: 'array'});
                 const firstSheetName = workbook.SheetNames[0];
                 const worksheet = workbook.Sheets[firstSheetName];
-                
-                // Converter a planilha para um array de arrays (linha a linha)
                 const rows = XLSX.utils.sheet_to_json(worksheet, {header: 1, defval: ''});
-                processData(rows);
-
+                callback(rows);
             } catch (error) {
                 console.error("Erro na leitura ou processamento do arquivo:", error);
                 errorMessage.classList.remove('hidden');
@@ -150,44 +158,132 @@
     }
 
     /**
-     * Processa os dados da planilha.
+     * 1. Lida com o upload do Banco de Questões
      */
-    function processData(lines) {
-        if (lines.length < 3) {
-            throw new Error('Dados insuficientes.');
+    function handleQuestionBankFile(e) {
+        const file = e.target.files[0];
+        bankStatus.textContent = "Carregando...";
+        bankStatus.classList.remove('text-red-500');
+        bankStatus.classList.add('text-indigo-600');
+        assessmentFile.disabled = true;
+
+        readFile(file, (rows) => {
+            try {
+                loadQuestionBank(rows);
+                bankStatus.textContent = `Banco de Questões carregado: ${Object.keys(questionIndexByText).length} questões indexadas.`;
+                bankStatus.classList.remove('text-red-500', 'text-indigo-600');
+                bankStatus.classList.add('text-green-600');
+                assessmentFile.disabled = false;
+            } catch (error) {
+                bankStatus.textContent = `Erro ao carregar o banco: ${error.message}`;
+                bankStatus.classList.remove('text-green-600', 'text-indigo-600');
+                bankStatus.classList.add('text-red-500');
+                questionIndexByText = null;
+                assessmentFile.disabled = true;
+            }
+        });
+    }
+
+    /**
+     * Função para carregar e indexar (criar PROCV) o Banco de Questões
+     * O 'PROCV' usa a Coluna B (QUESTÃO) como chave para buscar a Coluna C (TEMA).
+     */
+    function loadQuestionBank(rows) {
+        // Ignora a primeira linha (cabeçalho)
+        const bankData = rows.slice(1); 
+        const questionIndex = {}; // O nosso índice PROCV
+
+        if (bankData.length === 0) {
+             throw new Error("Planilha vazia ou sem dados válidos.");
         }
 
-        const correctAnswersRow = lines[0]; // Linha 1 da nova planilha: Respostas Corretas
-        const questionsRow = lines[1];    // Linha 2 da nova planilha: Perguntas/Seções
-        const participantsData = lines.slice(2); // Linha 3 em diante: Dados dos Participantes
+        bankData.forEach(row => {
+            // Coluna B (Índice 1) é a QUESTÃO (chave de busca)
+            const questao = String(row[1] || '').trim();
+            // Coluna C (Índice 2) é o TEMA (valor retornado pelo PROCV)
+            const temaDaQuestao = String(row[2] || '').trim(); 
 
-        globalProcessedResults = []; // Limpa o armazenamento global
-        resultsContainer.innerHTML = ''; // Limpa a UI
+            if (questao) {
+                // Indexa a Questão (Col B) para o TEMA (Col C)
+                questionIndex[questao] = {
+                    tema: temaDaQuestao, // Coluna C
+                };
+            }
+        });
+
+        if (Object.keys(questionIndex).length === 0) {
+             throw new Error("Nenhuma questão válida encontrada (Coluna B vazia).");
+        }
+
+        questionIndexByText = questionIndex;
+    }
+
+
+    /**
+     * 2. Lida com o upload do arquivo de Prova (Avaliação)
+     */
+    function handleAssessmentFile(e) {
+        const file = e.target.files[0];
+        
+        if (!questionIndexByText) {
+            bankStatus.textContent = "ERRO: Carregue o Banco de Questões primeiro.";
+            bankStatus.classList.remove('text-green-600', 'text-indigo-600');
+            bankStatus.classList.add('text-red-500');
+            return;
+        }
+
+        loadingMessage.classList.remove('hidden');
+        errorMessage.classList.add('hidden');
+        resultsContainer.innerHTML = '';
+        globalProcessedResults = [];
+        
+        readFile(file, processAssessmentData);
+    }
+
+    /**
+     * Processa os dados da prova (Avaliação).
+     */
+    function processAssessmentData(lines) {
+        if (lines.length < 3) {
+            throw new Error('Dados insuficientes na Prova.');
+        }
+
+        const correctAnswersRow = lines[0]; // Linha 1: Respostas Corretas
+        const questionsRow = lines[1];    // Linha 2: Perguntas/Seções
+        const participantsData = lines.slice(2); // Linha 3 em diante: Dados dos Participantes
 
         const sectionDefinitions = {};
         
-        // Coluna F (índice 5) é a primeira questão. 
+        // Mapeamento de Seções/Temas da Prova
         for (let i = 5; i < questionsRow.length; i++) {
-            const questionText = questionsRow[i];
-            const match = String(questionText).match(/\((.*?)\)/);
+            const questionTextWithSection = questionsRow[i];
+            const match = String(questionTextWithSection).match(/\((.*?)\)/);
+
             if (match && match[1]) {
                 const sectionName = match[1].replace(/[\*]/g, '').trim(); 
                 const sectionKey = sectionName.replace(/\s/g, ''); 
+                
+                // Extrai o texto limpo da questão para buscar no banco
+                const cleanQuestionText = String(questionTextWithSection).replace(/\((.*?)\)/, '').trim();
+                
                 if (!sectionDefinitions[sectionKey]) {
                     sectionDefinitions[sectionKey] = {
-                        name: sectionName,
+                        name: sectionName, // O CONCEITO (agrupamento principal)
                         questionIndices: [],
                         totalQuestions: 0
                     };
                 }
                 
-                sectionDefinitions[sectionKey].questionIndices.push(i);
+                sectionDefinitions[sectionKey].questionIndices.push({
+                    index: i,
+                    cleanQuestionText: cleanQuestionText
+                });
                 sectionDefinitions[sectionKey].totalQuestions++; 
             }
         }
 
         if (Object.keys(sectionDefinitions).length === 0) {
-            throw new Error('Nenhuma seção encontrada. Verifique se as perguntas estão no formato "(SEÇÃO)".');
+            throw new Error('Nenhuma seção encontrada. Verifique se as perguntas estão no formato "(SEÇÃO)" na Prova.');
         }
 
         participantsData.forEach((participantRow, index) => {
@@ -200,62 +296,82 @@
             const participantName = String(email).split('@')[0].split('.').map(name => name.charAt(0).toUpperCase() + name.slice(1)).join(' ');
             
             const participantResults = {
-                id: index, // Adiciona um ID para fácil recuperação global
+                id: index,
                 name: participantName,
                 leader: leader,
-                sections: {}
+                sections: {},
+                // studyPlan: { "CONCEITO": Set<"TEMA detalhado"> }
+                studyPlan: {} 
             };
 
             for (const sectionKey in sectionDefinitions) {
                 const section = sectionDefinitions[sectionKey];
                 let correctAnswersCount = 0;
                 const totalQuestions = section.totalQuestions;
-                const questionDetails = []; // Novo array para armazenar detalhes
+                const questionDetails = []; 
+                
+                const missedThemes = new Set(); // Para capturar temas perdidos dentro desta seção/conceito
 
-                section.questionIndices.forEach(i => {
-                    const questionText = questionsRow[i];
+                section.questionIndices.forEach(item => {
+                    const i = item.index;
+                    const cleanQuestionText = item.cleanQuestionText;
+                    
                     const userAnswer = (String(participantRow[i]) || '').trim();
                     const correctAnswer = (String(correctAnswersRow[i]) || '').trim();
                     const isCorrect = (userAnswer === correctAnswer && userAnswer !== '');
+                    
+                    // PROCV RÁPIDO: Busca o TEMA usando o texto da questão como chave no índice
+                    const bankInfo = questionIndexByText[cleanQuestionText] || {};
 
                     if (isCorrect) {
                         correctAnswersCount++;
+                    } else {
+                        // Se errou, adiciona o TEMA (da Coluna C do banco) ao conjunto de temas perdidos
+                        const temaDaQuestao = bankInfo.tema || 'N/A'; // bankInfo.tema é o valor da Coluna C
+                        if (temaDaQuestao !== 'N/A') {
+                            missedThemes.add(temaDaQuestao);
+                        }
                     }
                     
                     questionDetails.push({
-                        question: String(questionText).replace(/\((.*?)\)/, '').trim(), // Remove o nome da seção da pergunta
+                        question: cleanQuestionText,
                         user: userAnswer,
                         correct: correctAnswer,
-                        isCorrect: isCorrect
+                        isCorrect: isCorrect,
+                        // Mapeamento para UI:
+                        conceito: section.name, // CONCEITO é o agrupamento da prova (SEÇÃO)
+                        tema: bankInfo.tema || 'N/A', // TEMA é o detalhe da Coluna C do Banco
                     });
                 });
 
-                // Cálculo da nota: % de acertos * 10
+                // Cálculo da nota
                 const scoreRaw = totalQuestions > 0 ? (correctAnswersCount / totalQuestions) * 10 : 0;
-                
-                // Arredonda para baixo (floor) com 1 casa decimal
                 const scorePercentage = Math.floor(scoreRaw * 10) / 10;
                 
                 let passFailStatus = '';
                 let categoryClass = '';
                 
-                // 1. Definição do Status Aprovado/Reprovado
+                // Definição do Status Aprovado/Reprovado
                 if (scorePercentage >= 7.0) {
                     passFailStatus = 'Aprovado';
                     categoryClass = 'aprovado-cor'; 
                 } else {
                     passFailStatus = 'Reprovado';
                     categoryClass = 'reprovado-cor';
+                    
+                    // Adiciona o CONCEITO e seus TEMAS perdidos ao Plano de Estudos
+                    if (missedThemes.size > 0) {
+                        participantResults.studyPlan[section.name] = missedThemes;
+                    }
                 }
                 
-                // 2. Armazenar os resultados
                 participantResults.sections[section.name] = {
                     score: scorePercentage.toFixed(1), 
                     passFailStatus: passFailStatus,
                     categoryClass: categoryClass,
                     correctCount: correctAnswersCount,
                     totalQuestions: totalQuestions,
-                    details: questionDetails // Adiciona os detalhes aqui
+                    details: questionDetails 
                 };
             }
 
@@ -269,15 +385,39 @@
     }
 
     function renderParticipantResults(data) {
+        const studyPlanThemes = data.studyPlan;
+        const hasStudyPlan = Object.keys(studyPlanThemes).length > 0;
+
+        const studyPlanHtml = hasStudyPlan ? `
+            <div class="mt-4 p-3 rounded-lg border border-red-300 bg-red-50">
+                <p class="text-sm font-bold text-red-700 mb-1">🎯 Plano de Estudos Sugerido:</p>
+                <ul class="list-disc list-inside text-xs text-red-600 space-y-1">
+                    ${Object.keys(studyPlanThemes).map(conceito => `
+                        <li>
+                            <span class="font-bold text-gray-800">${conceito} (CONCEITO)</span>: Estudar os temas:
+                            <ul class="list-disc list-inside ml-4 text-red-600 space-y-0.5">
+                                ${Array.from(studyPlanThemes[conceito]).map(tema => `<li>${tema}</li>`).join('')}
+                            </ul>
+                        </li>
+                    `).join('')}
+                </ul>
+            </div>
+        ` : `
+            <div class="mt-4 p-3 rounded-lg border border-green-300 bg-green-50">
+                <p class="text-sm font-bold text-green-700">Parabéns! Nenhuma seção requer estudo imediato.</p>
+            </div>
+        `;
+        
         const resultsHtml = `
             <div class="card p-6 mb-6 ${data.id > 0 ? 'mt-6' : ''}">
                 <h2 class="text-2xl font-bold text-gray-800 mb-2">${data.name}</h2>
                 <p class="text-gray-600 mb-4">Líder: ${data.leader}</p>
+
+                ${studyPlanHtml}
                 
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
                     ${Object.keys(data.sections).map(sectionName => {
                         const section = data.sections[sectionName];
-                        // Escapa aspas simples no nome da seção para o onclick
                         const escapedSectionName = sectionName.replace(/'/g, "\\'"); 
                         const colorClass = section.categoryClass;
                         const bgClass = section.passFailStatus === 'Aprovado' ? 'bg-aprovado' : 'bg-reprovado';
@@ -322,6 +462,13 @@
                     <p class="text-gray-900 font-bold mb-1">Questão ${qIndex + 1}:</p>
                     <p class="text-gray-700 mb-2 italic">${item.question}</p>
                     
+                    <div class="flex flex-wrap gap-y-1 gap-x-4 text-xs mt-1 mb-2">
+                        <!-- item.conceito é a SEÇÃO/Agrupamento principal -->
+                        <span class="font-semibold text-gray-700">CONCEITO: ${item.conceito}</span>
+                        <!-- item.tema é o detalhe da Coluna C do Banco -->
+                        <span class="font-semibold text-gray-700">TEMA: ${item.tema}</span>
+                    </div>
+
                     <p class="text-sm">Sua Resposta: <span class="font-medium text-blue-600">${item.user || 'Não Respondido'}</span></p>
                     <p class="text-sm mb-1">Resposta Correta: <span class="font-medium text-gray-800">${item.correct || 'Vazio'}</span></p>
                     
