@@ -115,7 +115,7 @@
     const detailModal = document.getElementById('detail-modal');
     const bankStatus = document.getElementById('bank-status');
 
-    // Variável para armazenar o índice de busca raápida (simulando um PROCV de alta performance)
+    // Variável para armazenar o índice de busca rápida (simulando um PROCV de alta performance)
     let questionIndexByText = null; 
     let globalProcessedResults = []; // Armazenamento global dos resultados da prova
 
@@ -133,7 +133,7 @@
     }
 
     /**
-     * Função auxiliar pra ler o arquivo XLSX
+     * Função auxiliar para ler o arquivo XLSX
      */
     function readFile(file, callback) {
         if (!file) return;
@@ -301,7 +301,9 @@
                 leader: leader,
                 sections: {},
                 // studyPlan: { "CONCEITO": Set<"TEMA detalhado"> }
-                studyPlan: {} 
+                studyPlan: {},
+                // Estrutura para o Plano de Estudos Detalhado a ser copiado
+                detailedStudyPlan: {} 
             };
 
             for (const sectionKey in sectionDefinitions) {
@@ -311,6 +313,7 @@
                 const questionDetails = []; 
                 
                 const missedThemes = new Set(); // Para capturar temas perdidos dentro desta seção/conceito
+                const missedQuestions = []; // Para capturar detalhes das questões erradas para o copy-paste
 
                 section.questionIndices.forEach(item => {
                     const i = item.index;
@@ -323,14 +326,21 @@
                     // PROCV RÁPIDO: Busca o TEMA usando o texto da questão como chave no índice
                     const bankInfo = questionIndexByText[cleanQuestionText] || {};
 
-                    if (isCorrect) {
-                        correctAnswersCount++;
-                    } else {
-                        // Se errou, adiciona o TEMA (da Coluna C do banco) ao conjunto de temas perdidos
+                    if (!isCorrect) {
+                        // Se errou, armazena o TEMA e os detalhes da questão
                         const temaDaQuestao = bankInfo.tema || 'N/A'; // bankInfo.tema é o valor da Coluna C
                         if (temaDaQuestao !== 'N/A') {
                             missedThemes.add(temaDaQuestao);
                         }
+
+                        // Adiciona detalhes para a cópia (apenas se errou)
+                        missedQuestions.push({
+                            question: cleanQuestionText,
+                            user: userAnswer,
+                            correct: correctAnswer
+                        });
+                    } else {
+                        correctAnswersCount++;
                     }
                     
                     questionDetails.push({
@@ -343,30 +353,52 @@
                         tema: bankInfo.tema || 'N/A', // TEMA é o detalhe da Coluna C do Banco
                     });
                 });
-
-                // Cálculo da nota
-                const scoreRaw = totalQuestions > 0 ? (correctAnswersCount / totalQuestions) * 10 : 0;
-                const scorePercentage = Math.floor(scoreRaw * 10) / 10;
                 
+                // Armazena as questões erradas por CONCEITO
+                if (missedQuestions.length > 0) {
+                     participantResults.detailedStudyPlan[section.name] = missedQuestions;
+                }
+
+                // NOVO CÁLCULO DE NOTA (Arredondamento customizado para inteiro)
+                let finalScoreInteger = 0;
+                let scoreRaw = 0;
+
+                if (totalQuestions > 0) {
+                    scoreRaw = (correctAnswersCount / totalQuestions) * 10;
+                    
+                    // Lógica de arredondamento customizada: X.50 para baixo, X.51 para cima (para o inteiro mais próximo)
+                    const fractionalPart = scoreRaw - Math.floor(scoreRaw);
+                    
+                    // Usamos Number.EPSILON para garantir a precisão em operações de ponto flutuante,
+                    // assegurando que X.51 seja tratado como > 0.5.
+                    if (fractionalPart > 0.5 + Number.EPSILON) {
+                        // > X.50 (ou seja, >= X.51), arredonda para cima
+                        finalScoreInteger = Math.ceil(scoreRaw);
+                    } else {
+                        // <= X.50, arredonda para baixo
+                        finalScoreInteger = Math.floor(scoreRaw);
+                    }
+                }
+
                 let passFailStatus = '';
                 let categoryClass = '';
                 
-                // Definição do Status Aprovado/Reprovado
-                if (scorePercentage >= 7.0) {
+                // Definição do Status Aprovado/Reprovado usa a nota arredondada para inteiro (finalScoreInteger)
+                if (finalScoreInteger >= 7) { // Aprovado se a nota inteira for 7 ou mais
                     passFailStatus = 'Aprovado';
                     categoryClass = 'aprovado-cor'; 
                 } else {
                     passFailStatus = 'Reprovado';
                     categoryClass = 'reprovado-cor';
                     
-                    // Adiciona o CONCEITO e seus TEMAS perdidos ao Plano de Estudos
+                    // Adiciona o CONCEITO e seus TEMAS perdidos ao Plano de Estudos (Visão resumida)
                     if (missedThemes.size > 0) {
                         participantResults.studyPlan[section.name] = missedThemes;
                     }
                 }
                 
                 participantResults.sections[section.name] = {
-                    score: scorePercentage.toFixed(1), 
+                    score: finalScoreInteger, // Agora é um inteiro (Ex: 6 ou 7)
                     passFailStatus: passFailStatus,
                     categoryClass: categoryClass,
                     correctCount: correctAnswersCount,
@@ -384,13 +416,84 @@
         }
     }
 
+    /**
+     * Copia o plano de estudos detalhado (questões erradas) para a área de transferência.
+     */
+    function copyStudyPlanDetails(participantId) {
+        const participant = globalProcessedResults.find(p => p.id === participantId);
+        if (!participant) return;
+
+        let contentToCopy = '';
+        const detailedPlan = participant.detailedStudyPlan;
+        
+        // Itera sobre cada CONCEITO que teve erros
+        for (const conceito in detailedPlan) {
+            contentToCopy += `\n${participant.name} - ${conceito}\n\n`;
+            
+            const missedQuestions = detailedPlan[conceito];
+            
+            // Itera sobre as questões erradas dentro daquele CONCEITO
+            missedQuestions.forEach((item, index) => {
+                contentToCopy += `Questão ${index + 1}: ${item.question}\n`;
+                contentToCopy += `Resposta Errada: ${item.user || 'Não Respondido'}\n`;
+                contentToCopy += `Resposta Esperada: ${item.correct || 'Vazio'}\n\n`;
+            });
+        }
+        
+        // Tenta copiar para o clipboard (compatível com a maioria dos navegadores)
+        try {
+            const textarea = document.createElement('textarea');
+            textarea.value = contentToCopy.trim();
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            alertUser('success', 'Detalhes do Plano de Estudos copiados com sucesso!');
+        } catch (err) {
+            console.error('Falha ao copiar:', err);
+            alertUser('error', 'Falha ao copiar. Tente selecionar o texto manualmente.');
+        }
+    }
+
+    /**
+     * Função para exibir mensagens de sucesso/erro (substitui alert())
+     */
+    function alertUser(type, message) {
+        // Implementação simples de feedback visual para o usuário
+        const alertDiv = document.createElement('div');
+        alertDiv.textContent = message;
+        alertDiv.className = `fixed top-4 right-4 p-3 rounded-lg shadow-lg text-white font-bold transition-opacity duration-300 z-[999]`;
+        
+        if (type === 'success') {
+            alertDiv.classList.add('bg-green-500');
+        } else if (type === 'error') {
+            alertDiv.classList.add('bg-red-500');
+        }
+
+        document.body.appendChild(alertDiv);
+        setTimeout(() => {
+            alertDiv.style.opacity = '0';
+            setTimeout(() => alertDiv.remove(), 300);
+        }, 3000);
+    }
+
     function renderParticipantResults(data) {
         const studyPlanThemes = data.studyPlan;
         const hasStudyPlan = Object.keys(studyPlanThemes).length > 0;
 
+        const copyButton = hasStudyPlan ? `
+             <button onclick="copyStudyPlanDetails(${data.id})" 
+                     class="ml-3 px-3 py-1 bg-red-700 text-white text-xs font-semibold rounded-full hover:bg-red-800 transition-colors duration-150 shadow-md flex items-center">
+                 Copiar Detalhes
+             </button>
+        ` : '';
+
         const studyPlanHtml = hasStudyPlan ? `
             <div class="mt-4 p-3 rounded-lg border border-red-300 bg-red-50">
-                <p class="text-sm font-bold text-red-700 mb-1">🎯 Plano de Estudos Sugerido:</p>
+                <div class="flex items-center justify-between mb-1">
+                    <p class="text-sm font-bold text-red-700">🎯 Plano de Estudos Sugerido:</p>
+                    ${copyButton}
+                </div>
                 <ul class="list-disc list-inside text-xs text-red-600 space-y-1">
                     ${Object.keys(studyPlanThemes).map(conceito => `
                         <li>
